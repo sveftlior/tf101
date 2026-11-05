@@ -147,7 +147,7 @@ async function handleGuest(m,c){if(!m||typeof m!=='object'||!A.room)return;
    A.room.players[1]={sid,name:nick,ready:false,online:true};
   }else{A.room.players[1].name=nick;A.room.players[1].online=true;}
   if(A.conn&&A.conn!==c)try{A.conn.close();}catch{};
-  A.conn=c;A.online=true;c.send({type:'assigned',room:A.room});sync();return;
+  A.conn=c;A.online=true;c.send({type:'assigned',room:A.room});if(A.room.status==='starting')c.send({type:'begin',round:A.room.round,gens:A.room.gens});if(A.room.status==='finished'&&!A.room.reveals?.[1])c.send({type:'requestReveal'});sync();return;
  }
  if(c!==A.conn)return;
  if(m.type==='act')hostAction(1,m.action,m.payload);
@@ -183,7 +183,7 @@ async function pickMySecret(round,gens){let current=read(`tfguess:secret:${A.cod
  const members=A.idols.filter(x=>gens.includes(x.gen));if(members.length<2)throw Error('该代数人物不足，无法开始');const one=members[randomInt(members.length)];const s={round,id:one.id,salt:randomHex(32)};s.commit=await digest(`${s.id}:${s.salt}:${s.round}`);A.secret=s;saveSecret();return s;
 }
 async function beginGuest(m){const s=await pickMySecret(m.round,m.gens);sendGuest({type:'commit',round:m.round,commit:s.commit});toast('秘密身份已分配 ✦');}
-async function startGame(){if(!A.host||!A.room||A.room.status!=='lobby')return;if(!A.room.players[0]?.ready||!A.room.players[1]?.ready)return toast('请等待两人都准备好');
+async function startGame(){if(!A.host||!A.room||A.room.status!=='lobby')return;if(!A.room.players[0]?.ready||!A.room.players[1]?.ready)return toast('请等待两人都准备好');if(!A.conn?.open)return toast('对方暂时离线，请让朋友重新连接');
  A.room.round++;A.room.turn=randomInt(2);A.room.phase='ask';A.room.status='starting';A.room.winner=null;A.room.events=[];A.room.reveals={};A.room.commits={};A.room.pendingGuess=null;const s=await pickMySecret(A.room.round,A.room.gens);A.room.commits[0]=s.commit;
  sync();if(A.conn?.open)A.conn.send({type:'begin',round:A.room.round,gens:A.room.gens});else toast('对方已离线，请让朋友重新连接');}
 function rematch(){if(!A.host)return sendGuest({type:'act',action:'rematch'});resetLobby();}
