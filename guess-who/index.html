@@ -250,7 +250,7 @@ async function bootstrap(){try{
  if(window.__TFGAME_IDOLS){A.idols=window.__TFGAME_IDOLS;A.unassigned=window.__TFGAME_UNASSIGNED||[];}else{const [a,b]=await Promise.all([fetch('./idols.json'),fetch('./unassigned.json')]);if(!a.ok||!b.ok)throw Error('人物文件读取失败，请通过网站服务器打开，或使用单文件版本');A.idols=await a.json();A.unassigned=await b.json();}setup();const linkRoom=new URL(location.href).searchParams.get('room');
  if(read('tfguess:session')?.code){resume();return;}A.page=linkRoom&&/^\d{6}$/.test(linkRoom)?'join':'home';render();
  }catch(e){$('#root').innerHTML=`<main class="boot"><h2>资料载入失败</h2><p>${esc(e.message)}</p><p>可运行 python -m http.server 8000 后在浏览器打开网站。</p></main>`;}}
-bootstrap();
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bootstrap,{once:true});else bootstrap();
 </script>
 </head><body>
   <div id="root" aria-live="polite"><main class="boot"><div class="loader"></div><p>正在载入 TF家族人物库…</p></main></div>
