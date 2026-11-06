@@ -19,7 +19,7 @@ const time = iso => new Date(iso).toLocaleTimeString('zh-CN',{hour:'2-digit',min
 async function digest(s){const bytes=new TextEncoder().encode(s);const h=await crypto.subtle.digest('SHA-256',bytes);return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,'0')).join('');}
 const ANSWERS={yes:'是',no:'否',irrelevant:'与此无关'};
 const Q=['是谁隐藏在这里？','你们能猜到彼此的身份吗？','这个人是偶像吗？'];
-const A={idols:[],unassigned:[],page:'home',flow:'create',modal:null,modalData:null,tab:'ask',guess:null,query:'',photoMap:read('tfguess:photomap')||{},photoChoice:0,selectedGens:[1,2,3,4,5],peer:null,conn:null,host:false,room:null,code:null,name:'',sid:read('tfguess:sid'),seat:null,secret:null,online:false,error:'',connectAttempts:0,syncTimer:null,toastTimer:null,identityHidden:false,eliminated:new Set(),submitting:false,session:null};
+const A={idols:[],unassigned:[],page:'home',flow:'create',modal:null,modalData:null,tab:'ask',guess:null,query:'',photoMap:read('tfguess:photomap')||{},photoChoice:0,selectedGens:[1,2,3,4,5],peer:null,conn:null,host:false,room:null,code:null,name:'',sid:read('tfguess:sid'),seat:null,secret:null,online:false,error:'',connectAttempts:0,syncTimer:null,toastTimer:null,identityHidden:false,eliminated:new Set(),submitting:false,session:null,connectInProgress:false,connectAttempts:0,connTimer:null,ackTimer:null,retryTimer:null};
 if(!A.sid){A.sid=randomHex(12);store('tfguess:sid',A.sid);}
 const toast=(msg)=>{let t=$('#toast');if(!t)return;t.textContent=msg;t.classList.add('show');clearTimeout(A.toastTimer);A.toastTimer=setTimeout(()=>t.classList.remove('show'),3300);};
 function imageOf(idol){return A.room?.photoMap?.[idol.id]||A.photoMap[idol.id]||idol.image;}
@@ -33,7 +33,8 @@ function selfIdol(){return byId(A.secret?.id);}
 function isMyTurn(){return A.room?.status==='playing'&&A.room.phase==='ask'&&A.room.turn===A.seat;}
 function canAnswer(){return A.room?.status==='playing'&&A.room.phase==='answer'&&A.room.turn!==A.seat && !!A.room.events.findLast(e=>e.kind==='question'&&!e.answer);}
 function getUrl(code){const u=new URL(location.href);u.searchParams.set('room',code);return u.href;}
-function closePeer(){if(A.conn)try{A.conn.close();}catch{};if(A.peer)try{A.peer.destroy();}catch{};A.conn=null;A.peer=null;A.online=false;}
+function clearGuestTimers(){clearTimeout(A.connTimer);clearTimeout(A.ackTimer);clearTimeout(A.retryTimer);A.connTimer=null;A.ackTimer=null;A.retryTimer=null;}
+function closePeer(){clearGuestTimers();A.connectInProgress=false;A.connectAttempts=0;const c=A.conn,p=A.peer;A.conn=null;A.peer=null;A.online=false;if(c)try{c.close();}catch{};if(p)try{p.destroy();}catch{};}
 function persist(){if(A.room&&A.host)store(`tfguess:host:${A.code}`,A.room);}
 function remember(){store('tfguess:session',{host:A.host,code:A.code,name:A.name,gens:A.room?.gens||A.selectedGens,sid:A.sid});}
 function forget(){localStorage.removeItem('tfguess:session');}
@@ -57,7 +58,7 @@ function homePage(){
 }
 function formPage(){
  const isCreate=A.page==='create';
- return `<main class="form-wrap"><div class="pagehead"><div><span class="eyebrow">${isCreate?'NEW ROOM':'JOIN A ROOM'}</span><h1>${isCreate?'创建房间 ✦':'加入朋友的房间 ♡'}</h1><p>${isCreate?'先选择代数，朋友加入后即可开始游戏。':'请输入朋友发给你的 6 位数字房号。'}</p></div><button class="btn ghost small" data-action="home">← 返回</button></div><form class="panel" data-form="${isCreate?'create':'join'}"><div class="field"><label for="nickname">你的昵称</label><input class="input" id="nickname" name="nickname" autocomplete="nickname" minlength="1" maxlength="16" required value="${esc(A.name)}"></div>${isCreate?`<div class="field"><label>选择代数（可以多选）</label><div class="gen-grid">${[1,2,3,4,5].map(g=>`<label class="gen-opt ${A.selectedGens.includes(g)?'active':''}"><input type="checkbox" name="gens" value="${g}" ${A.selectedGens.includes(g)?'checked':''}><strong>${g} 代</strong><span>${A.idols.filter(c=>c.gen===g).length} 人</span></label>`).join('')}</div><p class="hint">只有你选中的代数会进入随机人物池。</p></div>`:`<div class="field"><label for="roomcode">6 位数字房间号</label><input class="input" id="roomcode" name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required placeholder="例如：025718" value="${esc(new URL(location.href).searchParams.get('room')||'')}"></div>`}<div class="form-buttons"><button class="btn primary full" type="submit" ${A.submitting?'disabled':''}>${A.submitting?'连接中…':isCreate?'创建并生成房间号 →':'加入房间 →'}</button></div>${!isCreate?'<p class="hint center">请让创建房间的朋友保持网页开启，双方才能联机。</p>':''}</form></main>`;
+ return `<main class="form-wrap"><div class="pagehead"><div><span class="eyebrow">${isCreate?'NEW ROOM':'JOIN A ROOM'}</span><h1>${isCreate?'创建房间 ✦':'加入朋友的房间 ♡'}</h1><p>${isCreate?'先选择代数，朋友加入后即可开始游戏。':'请输入朋友发给你的 6 位数字房号。'}</p></div><button class="btn ghost small" data-action="home">← 返回</button></div><form class="panel" data-form="${isCreate?'create':'join'}"><div class="field"><label for="nickname">你的昵称</label><input class="input" id="nickname" name="nickname" autocomplete="nickname" minlength="1" maxlength="16" required value="${esc(A.name)}"></div>${isCreate?`<div class="field"><label>选择代数（可以多选）</label><div class="gen-grid">${[1,2,3,4,5].map(g=>`<label class="gen-opt ${A.selectedGens.includes(g)?'active':''}"><input type="checkbox" name="gens" value="${g}" ${A.selectedGens.includes(g)?'checked':''}><strong>${g} 代</strong><span>${A.idols.filter(c=>c.gen===g).length} 人</span></label>`).join('')}</div><p class="hint">只有你选中的代数会进入随机人物池。</p></div>`:`<div class="field"><label for="roomcode">6 位数字房间号</label><input class="input" id="roomcode" name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required placeholder="例如：025718" value="${esc(new URL(location.href).searchParams.get('room')||'')}"></div>`}<div class="form-buttons"><button class="btn primary full" type="submit" ${A.submitting?'disabled':''}>${A.submitting?(isCreate?'正在创建…':('连接中，第 '+Math.min(A.connectAttempts||1,3)+' / 3 次尝试…')):isCreate?'创建并生成房间号 →':A.error?'重新连接 →':'加入房间 →'}</button></div>${!isCreate?'<p class="hint center">请让创建房间的朋友保持网页开启，双方才能联机。</p>'+(A.error?'<p role="alert" class="hint center" style="color:#9b2547;font-weight:650;margin-top:12px">'+esc(A.error)+'</p><p class="hint center">若多次连接失败，可尝试双方使用 Wi-Fi 或另一网络。部分移动网络需要 TURN 中继服务，单靠公共信令可能无法穿透网络。</p>':''):''}</form></main>`;
 }
 function slot(p,seat){return `<div class="player-slot"><div class="avatar">${seat===0?'✦':'♡'}</div><b>${esc(p?.name||'等待好友加入…')}</b><span class="pill ${p?.ready?'ok':''}">${p?(p.ready?'✓ 已准备':'尚未准备'):'空位'}</span></div>`;}
 function lobbyPage(){const room=A.room;
@@ -109,30 +110,67 @@ async function hostRoom(nickname,gens,resumeCode){await ensurePeer();closePeer()
   if(result.ok){A.room=resumeCode?read(`tfguess:host:${code}`):roomBase(code,nickname,gens);if(!A.room)A.room=roomBase(code,nickname,gens);A.room.players[0].online=true;A.seat=0;A.online=true;loadSecret();loadEliminated();setupHost(result.p);A.submitting=false;remember();sync();toast(resumeCode?'已恢复房间':'房间创建成功');return;}
   if(resumeCode){A.submitting=false;A.page='home';render();toast('原房号暂不可用，请检查是否已有相同房间页面开启');return;}
  }
- A.submitting=false;A.page='create';render();toast('无法创建房间，请检查信令服务连接');
+ A.submitting=false;A.page='create';render();toast('房间创建失败：公共联机服务无法连接。请尝试切换网络。');
 }
 function setupHost(p){p.on('connection',c=>{
  c.on('open',()=>{});
  c.on('data',m=>handleGuest(m,c));
- c.on('close',()=>{if(A.conn===c){A.online=false;A.conn=null;if(A.room?.players[1]){A.room.players[1].online=false;sync();}}});
+ c.on('close',()=>{if(A.conn===c){A.conn=null;if(A.room?.players[1]){A.room.players[1].online=false;sync();}}});
  c.on('error',()=>{});
  });p.on('disconnected',()=>{A.online=false;toast('信令服务暂时离线，尝试恢复中');p.reconnect();render();});p.on('open',()=>{A.online=true;render();});}
 function sendGuest(msg){if(A.conn?.open)A.conn.send(msg);else toast('连接中断，正在尝试重连');}
-async function joinRoom(code,nickname,recover=false){await ensurePeer();if(!/^\d{6}$/.test(code)){toast('请填写 6 位数字房号');return;}closePeer();A.code=code;A.name=nickname;A.host=false;A.online=false;A.page='join';A.submitting=true;render();const p=peerInstance();A.peer=p;
- p.on('open',()=>connectGuest());p.on('error',e=>{if(e.type==='peer-unavailable'){A.error='还没有找到这个房间，请检查房号或房主是否在线';toast(A.error);}else{A.error='连接出现问题，正在重试';}A.online=false;render();});p.on('disconnected',()=>{A.online=false;render();try{p.reconnect();}catch{}});
- if(recover){A.submitting=false;A.page='lobby';render();}
+async function joinRoom(code,nickname,recover=false){
+ if(!/^\d{6}$/.test(code)){toast('请填写 6 位数字房号');return;}
+ closePeer();A.code=code;A.name=nickname;A.host=false;A.online=false;A.error='';A.room=null;A.page='join';A.submitting=true;A.connectAttempts=0;render();
+ try{await ensurePeer();}catch(e){A.submitting=false;A.error='联机服务组件加载失败，请刷新页面或切换网络后重试。';render();toast(A.error);return;}
+ const p=peerInstance();A.peer=p;
+ const signalTimer=setTimeout(()=>{if(A.peer===p&&!p.open&&A.submitting){A.submitting=false;A.error='联机信令服务无响应。请检查网络后点击重新连接。';render();}},11000);
+ p.on('open',()=>{clearTimeout(signalTimer);if(A.peer===p)connectGuest();});
+ p.on('error',e=>{clearTimeout(signalTimer);if(A.peer!==p)return;
+  const type=e?.type||'';
+  if(type==='peer-unavailable'){guestFailed('没有找到房主。请检查六位房号，确认房主仍停留在等待页面。',true);}
+  else if(type==='network'||type==='server-error'||type==='socket-error'||type==='socket-closed'){guestFailed('联机信令服务无法连接。请尝试更换网络，或稍后重新连接。',true);}
+  else{guestFailed('连接出现问题（'+(type||'未知原因')+'），请重试。',true);}
+ });
+ p.on('disconnected',()=>{if(A.peer!==p)return;A.online=false;if(A.room){render();}else{guestFailed('联机服务中断。请稍后重新连接。',true);}try{p.reconnect();}catch{}});
+ if(recover){A.page='join';render();}
 }
-function connectGuest(){if(!A.peer||A.peer.destroyed||A.host)return;if(A.conn?.open)return;try{
- const c=A.peer.connect(`tfguess-${A.code}`,{reliable:true,serialization:'json',metadata:{version:1}});A.conn=c;
- c.on('open',()=>{A.error='';c.send({type:'join',sid:A.sid,name:A.name});});
- c.on('data',m=>handleHost(m));
- c.on('close',()=>{A.online=false;A.conn=null;render();});
- c.on('error',()=>{A.online=false;render();});
- }catch(e){A.error=e.message;render();}}
+function guestFailed(message,terminal=false){
+ if(A.host||!A.peer)return;
+ clearGuestTimers();A.connectInProgress=false;
+ const c=A.conn;A.conn=null;if(c)try{c.close();}catch{}
+ A.online=false;A.error=message;
+ if(A.room){A.submitting=false;render();return;}
+ if(terminal||A.connectAttempts>=3||!A.peer.open){
+  A.submitting=false;A.error=message+' 点击「重新连接」再试。';render();toast('连接失败，请检查提示');return;
+ }
+ A.submitting=true;render();
+ A.retryTimer=setTimeout(()=>{if(A.peer?.open&&!A.host&&!A.conn)connectGuest();},1200+800*A.connectAttempts);
+}
+function connectGuest(){
+ if(!A.peer||A.peer.destroyed||A.host||!A.peer.open)return;
+ if(A.conn?.open||A.connectInProgress)return;
+ if(A.connectAttempts>=3){A.submitting=false;A.error='已尝试 3 次，仍无法连接房主。请点击重新连接，或让双方换一个网络。';render();return;}
+ clearGuestTimers();A.connectInProgress=true;A.connectAttempts++;
+ A.submitting=!A.room;A.error='';if(!A.room)render();
+ try{
+  const c=A.peer.connect('tfguess-'+A.code,{reliable:true,serialization:'json',metadata:{version:2}});A.conn=c;
+  A.connTimer=setTimeout(()=>{if(A.conn===c&&!c.open)guestFailed('连接超时，无法与房主建立数据通道。');},14000);
+  c.on('open',()=>{
+   if(A.conn!==c)return;
+   clearTimeout(A.connTimer);A.connTimer=null;
+   c.send({type:'join',sid:A.sid,name:A.name});
+   A.ackTimer=setTimeout(()=>{if(A.conn===c&&!A.room)guestFailed('已经连到房主，但等待房间确认超时。');},8000);
+  });
+  c.on('data',m=>{if(A.conn===c)handleHost(m);});
+  c.on('close',()=>{if(A.conn!==c)return;if(A.room){A.online=false;A.conn=null;A.connectInProgress=false;A.connectAttempts=0;render();}else guestFailed('连接被关闭，可能是房主离线或网络中断。');});
+  c.on('error',e=>{if(A.conn!==c)return;guestFailed('数据连接失败：'+(e?.message||'请检查网络'));});
+ }catch(e){guestFailed('建立连接时发生错误：'+(e?.message||'未知错误'));}
+}
 function handleHost(m){if(!m||typeof m!=='object')return;
- if(m.type==='rejected'){A.submitting=false;A.error=m.error||'加入失败';toast(A.error);A.page='join';render();if(A.conn){A.conn.close();A.conn=null;}return;}
- if(m.type==='assigned'){A.seat=1;A.online=true;A.submitting=false;A.room=m.room;A.page=m.room.status==='lobby'?'lobby':'game';loadSecret();loadEliminated();remember();render();toast('加入房间成功 ♡');return;}
- if(m.type==='state'){const prevRound=A.room?.round;A.room=m.room;A.online=true;A.submitting=false;A.page=m.room.status==='lobby'?'lobby':'game';if(prevRound!==m.room.round){loadSecret();loadEliminated();}render();return;}
+ if(m.type==='rejected'){clearGuestTimers();A.connectInProgress=false;A.submitting=false;A.error=m.error||'加入失败';toast(A.error);A.page='join';render();if(A.conn){A.conn.close();A.conn=null;}return;}
+ if(m.type==='assigned'){clearGuestTimers();A.connectInProgress=false;A.connectAttempts=0;A.error='';A.seat=1;A.online=true;A.submitting=false;A.room=m.room;A.page=m.room.status==='lobby'?'lobby':'game';loadSecret();loadEliminated();remember();render();toast('加入房间成功 ♡');return;}
+ if(m.type==='state'){clearGuestTimers();A.connectInProgress=false;A.connectAttempts=0;A.error='';const prevRound=A.room?.round;A.room=m.room;A.online=true;A.submitting=false;A.page=m.room.status==='lobby'?'lobby':'game';if(prevRound!==m.room.round){loadSecret();loadEliminated();}render();return;}
  if(m.type==='begin'){beginGuest(m).catch(e=>toast(e.message));return;}
  if(m.type==='verifyGuess'){const okay=m.candidate===A.secret?.id;sendGuest({type:'verifyResult',eventId:m.eventId,correct:okay,reveal:okay?A.secret:null});return;}
  if(m.type==='requestReveal'){if(A.secret)sendGuest({type:'reveal',secret:A.secret});return;}
@@ -243,12 +281,12 @@ function setup(){document.addEventListener('submit',submitAction);document.addEv
  window.addEventListener('online',()=>{if(A.peer?.disconnected)try{A.peer.reconnect();}catch{};if(!A.host&&!A.conn?.open)connectGuest();});
  window.addEventListener('beforeunload',()=>{if(A.host)persist();});
  A.syncTimer=setInterval(()=>{if(!A.room)return;if(A.host){if(A.conn?.open&&A.room?.status==='playing'&&A.room.phase==='verifying'&&A.room.pendingGuess?.target===1){A.conn.send({type:'verifyGuess',eventId:A.room.pendingGuess.eventId,candidate:A.room.pendingGuess.candidate});}return;}
-  if(A.peer&&!A.peer.destroyed&&!A.conn?.open&&A.peer.open){connectGuest();}
+  if(A.peer&&!A.peer.destroyed&&!A.conn?.open&&!A.connectInProgress&&A.peer.open&&(A.room||A.submitting)&&A.connectAttempts<3){connectGuest();}
  },3500);
 }
 async function bootstrap(){try{
  if(window.__TFGAME_IDOLS){A.idols=window.__TFGAME_IDOLS;A.unassigned=window.__TFGAME_UNASSIGNED||[];}else{const [a,b]=await Promise.all([fetch('./idols.json'),fetch('./unassigned.json')]);if(!a.ok||!b.ok)throw Error('人物文件读取失败，请通过网站服务器打开，或使用单文件版本');A.idols=await a.json();A.unassigned=await b.json();}setup();const linkRoom=new URL(location.href).searchParams.get('room');
- if(read('tfguess:session')?.code){resume();return;}A.page=linkRoom&&/^\d{6}$/.test(linkRoom)?'join':'home';render();
+ const prevSession=read('tfguess:session');if(prevSession?.code&&!(linkRoom&&linkRoom!==prevSession.code)){resume();return;}A.page=linkRoom&&/^\d{6}$/.test(linkRoom)?'join':'home';render();
  }catch(e){$('#root').innerHTML=`<main class="boot"><h2>资料载入失败</h2><p>${esc(e.message)}</p><p>可运行 python -m http.server 8000 后在浏览器打开网站。</p></main>`;}}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bootstrap,{once:true});else bootstrap();
 </script>
